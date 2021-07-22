@@ -1,1 +1,11 @@
-# function_add_partition
+# Function add partition
+
+Функция добавляет новые партиции от максимальной даты.
+
+Аргументы функции:
+        sname text - имя схемы в которой находится таблица,
+        tname text - имя таблицы,
+        to_dt text - дата до которой нужно партиционировать таблицу,
+        partition_interval text - интервал партиции,
+        check_interval bool - флаг проверки интервала, по умолчанию TRUE.
+   
