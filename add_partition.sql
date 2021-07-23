@@ -1,12 +1,11 @@
-create or replace function add_partition(sname text, tname text, to_dt text, partition_interval text, check_interval bool default True)
+create or replace function add_partition(sname text, tname text, to_dt text, partition_interval text, check_interval bool default true, all_or_any text default 'all')
 returns text as $$
-declare 
+declare
  max_part_date timestamp;
- table_interval int;
- interval_ok bool;
+ flg bool;
  v_q text;
  res text;
-begin
+begin 
 WITH recursive inh
 AS (
 	SELECT i.inhrelid, NULL::TEXT AS parent
@@ -37,55 +36,47 @@ AS (
 	SELECT partition_name, regexp_matches(partition_expression, '(\d+[^'')]+)\D+(\d+[^'')]+)', 'g')::TIMESTAMP array re_d
 	FROM a
 	), f
-AS (
-	SELECT re_d[1] start_dt, re_d[2] end_dt, re_d[1] + partition_interval::interval - re_d[2] dif_intrv
+AS ( /*Проверка равенства инрервалов партиционирования и переданного интервала*/
+	SELECT re_d[2] end_dttm, re_d[1] + partition_interval::interval - re_d[2] dif_intrv
 	FROM b
 	), max_d
 AS (
-	SELECT max(end_dt) max_dttm
+	SELECT max(end_dttm) max_dttm
 	FROM f
-	), ex_interv
-AS (
-	SELECT count(*) exists_interv
-	FROM f
-	WHERE dif_intrv = '00:00:00'
-	)	
-SELECT max_dttm, exists_interv into max_part_date, table_interval
-FROM f;
-
+	), flag 
+AS ( /*Флаг проверки интервала*/
+	SELECT CASE WHEN all_or_any = 'any' 
+	THEN '00:00:00'::interval =any (SELECT dif_intrv FROM f)
+	ELSE '00:00:00'::interval =all (SELECT dif_intrv FROM f) 
+	END flag_intrv 
+	)
+SELECT max_dttm, flag_intrv INTO max_part_date, flg
+FROM max_d, flag;
 res:=''; 
 
-interval_ok = true;
-
 if check_interval then
-   if table_interval = 0 
-     then interval_ok = false;
-       raise exception 'Таблица % не партиционирована по интервалу %', sname||'.'||tname, partition_interval;
+	if not flg then
+		raise exception 'Таблица % партиционирована по нескольким интервалам', sname||'.'||tname;
     end if;
 end if;
 
-if max_part_date is null 
-   then 
+if max_part_date is null then 
 	raise exception 'Таблица не существует или не партиционирована %', sname||'.'||tname;
+elsif max_part_date >= to_dt::timestamp  then
+	raise notice  '%', max_part_date;
+	return 'Таблица партициоированна до ' || max_part_date;
 else
-  if interval_ok then
- 		if max_part_date < to_dt::timestamp then 
-		 while (max_part_date <= to_dt::timestamp)
-		 loop
-			v_q := 'create table ' || sname || '.' ||tname ||'_'||to_char(max_part_date,'yyyy_MM_dd_HH24_MI_ss') ||
-     		' partition of ' || sname || '.' ||tname ||' for values from('''
-     		|| max_part_date || ''') to(''' || max_part_date + (partition_interval)::interval || ''')'; 
-    	 	raise notice  '%', v_q;
-    	 	execute v_q;
-    	 	max_part_date:= max_part_date + (partition_interval)::interval;
-    	 	res:= res||v_q||';'||chr(10);
- 		 end loop;
- 		 return res;
-         else 
- 		   raise notice  '%', max_part_date;
- 		   return 'Таблица партициоированна до ' || max_part_date; 	 	
-		end if;
-	end if;
+ 	while (max_part_date <= to_dt::timestamp)
+ 	loop
+		v_q := 'create table ' || sname || '.' ||tname ||'_'||to_char(max_part_date,'yyyy_MM_dd_HH24_MI_ss') ||
+		' partition of ' || sname || '.' ||tname ||' for values from('''
+		|| max_part_date || ''') to(''' || max_part_date + (partition_interval)::interval || ''')'; 
+ 		raise notice  '%', v_q;
+ 		execute v_q;
+ 		max_part_date:= max_part_date + (partition_interval)::interval;
+ 		res:= res||v_q||';'||chr(10);
+ 	end loop;
+ 	return res;
 end if;
 end;
 $$ language plpgsql;
